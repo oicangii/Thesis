@@ -1,0 +1,383 @@
+---
+title: "Version 6"
+author: "J. Ignacio Guzmán Serrano (685935jg)"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Libraries
+
+```{r}
+library(sampleSelection)
+library(mvtnorm)
+library(caret)
+library(ggplot2)
+library(rgl)
+library(Metrics)
+library(truncnorm)
+library(knitr)
+library(sandwich)
+library(kableExtra)
+library(MASS)
+library(nortest)
+library(moments)
+library(tseries)
+```
+
+### Read in advance
+
+Check the Outline. There are 3 parts:
+
+1.  Creation of data set 'data': I used the format code by Toomet & Henningsen (2008). The first chunck (1.1) creates a data set when variables are not correlated and in the second chunck (1.2) when you want to correlate them. I could have used just the second chunck for everything and set correlation to 0 when not wanting variables to be correlated but I took the first option
+
+    No matter the option, in this section the different combinations for predictions are created: the scenarios, censoring, sample size, correlation of errors and correlation of variables.
+
+    (The one by default is Scenario 1, sample size = 800, correlation errors = 0, degree of censoring = 30%)
+
+2.  Running iterations: 100 iterations where models are trained and validated. WARNING: change % partition depending on sample size (0.625 for sample size = 800; and 0.869 when sample size = 2300) and change Heckman models code when trained depending on the Scenario to be tested.
+
+3.  Results: all in one chunck that will generated:
+
+    -   A table with metrics for predictions made on 'test_ws'.
+
+    -   A second table with metrics for predictions made on 'test'.
+
+    -   A third table with the coefficients from models.
+
+    -   Two plots. A boxplot of all the MSE from predictions made on 'test_ws'. And a plot with MSE from predictions on 'test_ws' from each iteration.
+
+# 1. Creation of data set 'data'
+
+#### 1.1 When variables not correlated
+
+```{r}
+set.seed(22)
+
+# --------------------------------------------------------------------
+
+v1 <- runif(800) # Random values from 0 to 1
+v2 <- runif(800) # Random values from 0 to 1
+errors <- rmvnorm(800, c(0, 0), matrix(c(1, 0,0, 1), 2, 2))
+                 # Errors correlated at -0.7
+
+# --------------------------------------------------------------------
+
+# join previous variables to a data frame.
+data <- data.frame(var1 = v1, var2 = v2, errors = errors)
+# add to that data frame the following variables:
+data$selection <- data$var2 + data$errors.2 > 0
+data$latent.truth <- data$var1 + data$errors.1
+data$bias.outcome <- data$latent.truth * (data$selection > 0)
+
+rm( v1, v2, errors)
+
+# Check censoring degree
+(nrow(data[data$bias.outcome == 0, ])/nrow(data))
+```
+
+#### 1.2 When variables correlated
+
+```{r}
+set.seed(22)
+
+# --------------------------------------------------------------------
+
+
+correlated_normals <- mvrnorm(800, c(0, 0), matrix(c(1, -0.5, -0.5, 1), 2, 2))
+
+# Transform normal variables to uniform variables
+v1 <- pnorm(correlated_normals[,1])  # Transform to uniform
+v2 <- pnorm(correlated_normals[,2])  # Transform to uniform
+errors <- rmvnorm(800, c(0, 0), matrix(c(1, -0.85,-0.85, 1), 2, 2))
+
+# --------------------------------------------------------------------
+# join previous variables to a data frame.
+data <- data.frame(var1 = v1, var2 = v2, errors = errors)
+# add to that data frame the following variables:
+data$selection <- data$var2 +  data$errors.2 > 0
+data$latent.truth <- data$var1 + data$errors.1
+data$bias.outcome <- data$latent.truth * (data$selection > 0)
+
+rm( v1, v2, errors)
+# Check censoring degree
+(nrow(data[data$bias.outcome == 0, ])/nrow(data))
+```
+
+# 2. Iterations
+
+Predictions are done 2 times, one with 'test' set and another one with 'test_ws' set. - The ones done with 'test' are recorded with letter **A** to differentiate.
+
+```{r}
+
+
+# Initialize empty matrices to store results -----------------------------------
+num_models <- 4
+num_metrics <- 5
+num_tests <- 4
+mae <- matrix(NA, nrow = 100, ncol = num_models)
+mse <- matrix(NA, nrow = 100, ncol = num_models)
+rmse <- matrix(NA, nrow = 100, ncol = num_models)
+var_resid <- matrix(NA, nrow = 100, ncol = num_models)
+bias_resid <- matrix(NA, nrow = 100, ncol = num_models)
+
+coefficients_ols <- data.frame(Iteration = numeric(), Intercept = numeric(), Var2 = numeric(), SE_Intercept = numeric(), SE_Var2 = numeric())
+coefficients_ml <- data.frame(Iteration = numeric(), Intercept = numeric(), Var2 = numeric(), SE_Intercept = numeric(), SE_Var2 = numeric())
+coefficients_2step <- data.frame(Iteration = numeric(), Intercept = numeric(), Var2 = numeric(), SE_Intercept = numeric(), SE_Var2 = numeric())
+coefficients_true <- data.frame(Iteration = numeric(), Intercept = numeric(), Var2 = numeric(), SE_Intercept = numeric(), SE_Var2 = numeric())
+
+mse_true <- data.frame(Iteration = numeric(), MSE = numeric())
+mse_ols <- data.frame(Iteration = numeric(), MSE = numeric())
+mse_ml <- data.frame(Iteration = numeric(), MSE = numeric())
+mse_2step <- data.frame(Iteration = numeric(), MSE = numeric())
+
+A.mae <- matrix(NA, nrow = 100, ncol = num_models)
+A.mse <- matrix(NA, nrow = 100, ncol = num_models)
+A.rmse <- matrix(NA, nrow = 100, ncol = num_models)
+A.var_resid <- matrix(NA, nrow = 100, ncol = num_models)
+A.bias_resid <- matrix(NA, nrow = 100, ncol = num_models)
+
+
+A.mse_true <- data.frame(Iteration = numeric(), MSE = numeric())
+A.mse_ols <- data.frame(Iteration = numeric(), MSE = numeric())
+A.mse_ml <- data.frame(Iteration = numeric(), MSE = numeric())
+A.mse_2step <- data.frame(Iteration = numeric(), MSE = numeric())
+
+
+jb_p <- matrix(NA, nrow = 100, ncol = num_models)
+jb_s <- matrix(NA, nrow = 100, ncol = num_models)
+rescaled_moments_p <- matrix(NA, nrow = 100, ncol = num_models)
+censoring <- matrix(NA, nrow = 100)
+
+
+
+
+# Loop for 100 iterations -----------------------------------------------------
+
+for (i in 1:100) {
+  set.seed(i)  # Set a different seed for each iteration
+  
+  # Create training and test set
+  train_indices <- createDataPartition(data$var1, p = 0.625, list = FALSE)
+  train <- data[train_indices, ]
+  test <- data[-train_indices, ]
+  
+  # Subset data for Heckman model
+  train_ws <- train[train$selection, ]
+  test_ws <- test[test$selection, ]
+  
+  
+  censoring[i,] <- 1-(nrow(train[train$selection, ])/nrow(train)) # calculate the degree of censoring
+  
+  # Fit models
+  model.true <- lm(latent.truth ~ var1, data = train)
+  model.ols <- lm(latent.truth ~ var1, data = train_ws)
+  model.ml <- selection(selection ~ var2 , bias.outcome ~ var1, 
+                        method = "ml", data = train)
+  model.2step <- selection(selection ~ var2, bias.outcome ~ var1, 
+                           method = "2step", data = train)
+  
+   # Store coefficients and standard errors
+  coef_true <- coef(summary(model.true))
+  coef_ols <- coef(summary(model.ols))
+  coef_ml <- coef(summary(model.ml))
+  coef_2step <- coef(summary(model.2step))
+ 
+  
+  
+
+# MAKING PREDICTIONS WITH 'test' set (all individuals, observed and unobserved) ----------------------------------------- 
+  
+  # Make predictions
+  A.p.true <- predict(model.true, newdata = test)
+  A.p.ols <- predict(model.ols, newdata = test)
+  A.p.ml <- predict(model.ml, newdata = test)
+  A.p.2step <- predict(model.2step, newdata = test)
+  
+  # Compute metrics
+  A.residuals_true <- test$latent.truth - A.p.true
+  A.residuals_ols <- test$latent.truth - A.p.ols
+  A.residuals_ml <- test$latent.truth - A.p.ml
+  A.residuals_2step <- test$latent.truth - A.p.2step
+  
+  A.mae[i, ] <- c(mean(abs(A.residuals_ols)), mean(abs(A.residuals_ml)), mean(abs(A.residuals_2step)), mean(abs(A.residuals_true)))
+  A.mse[i, ] <- c(mean(A.residuals_ols^2), mean(A.residuals_ml^2), mean(A.residuals_2step^2), mean(A.residuals_true^2))
+  A.rmse[i, ] <- c(sqrt(mean(A.residuals_ols^2)), sqrt(mean(A.residuals_ml^2)), sqrt(mean(A.residuals_2step^2)), sqrt(mean(A.residuals_true^2)))
+  A.var_resid[i, ] <- c(var(A.residuals_ols), var(A.residuals_ml), var(A.residuals_2step), var(A.residuals_true))
+  A.bias_resid[i, ] <- c((mean(A.p.ols) - mean(test$latent.truth))^2, 
+                       (mean(A.p.ml) - mean(test$latent.truth))^2,
+                       (mean(A.p.2step) - mean(test$latent.truth))^2, 
+                       (mean(A.p.true) - mean(test$latent.truth))^2)
+  
+  # Append MSE for each model to respective data frames
+  A.mse_true <- rbind(A.mse_true, data.frame(Iteration = i, MSE = mean(A.residuals_true^2)))
+  A.mse_ols <- rbind(A.mse_ols, data.frame(Iteration = i, MSE = mean(A.residuals_ols^2)))
+  A.mse_ml <- rbind(A.mse_ml, data.frame(Iteration = i, MSE = mean(A.residuals_ml^2)))
+  A.mse_2step <- rbind(A.mse_2step, data.frame(Iteration = i, MSE = mean(A.residuals_2step^2)))
+  
+  
+  
+  
+  
+# MAKING PREDICTIONS WITH 'TEST WITH  OBSERVED'test_ws' (only selected individuals) ----------------------------------------- 
+  # Make predictions
+  p.true <- predict(model.true, newdata = test_ws)
+  p.ols <- predict(model.ols, newdata = test_ws)
+  p.ml <- predict(model.ml, newdata = test_ws)
+  p.2step <- predict(model.2step, newdata = test_ws)
+  
+  # Compute metrics
+  residuals_true <- test_ws$latent.truth - p.true
+  residuals_ols <- test_ws$latent.truth - p.ols
+  residuals_ml <- test_ws$latent.truth - p.ml
+  residuals_2step <- test_ws$latent.truth - p.2step
+  
+  mae[i, ] <- c(mean(abs(residuals_ols)), mean(abs(residuals_ml)), mean(abs(residuals_2step)), mean(abs(residuals_true)))
+  mse[i, ] <- c(mean(residuals_ols^2), mean(residuals_ml^2), mean(residuals_2step^2), mean(residuals_true^2))
+  rmse[i, ] <- c(sqrt(mean(residuals_ols^2)), sqrt(mean(residuals_ml^2)), sqrt(mean(residuals_2step^2)), sqrt(mean(residuals_true^2)))
+  var_resid[i, ] <- c(var(residuals_ols), var(residuals_ml), var(residuals_2step), var(residuals_true))
+  bias_resid[i, ] <- c((mean(p.ols) - mean(test_ws$latent.truth))^2, 
+                       (mean(p.ml) - mean(test_ws$latent.truth))^2,
+                       (mean(p.2step) - mean(test_ws$latent.truth))^2, 
+                       (mean(p.true) - mean(test_ws$latent.truth))^2)
+  
+  # Append MSE for each model to respective data frames
+  mse_true <- rbind(mse_true, data.frame(Iteration = i, MSE = mean(residuals_true^2)))
+  mse_ols <- rbind(mse_ols, data.frame(Iteration = i, MSE = mean(residuals_ols^2)))
+  mse_ml <- rbind(mse_ml, data.frame(Iteration = i, MSE = mean(residuals_ml^2)))
+  mse_2step <- rbind(mse_2step, data.frame(Iteration = i, MSE = mean(residuals_2step^2)))
+
+  
+  
+
+#---------------------------------------------------------------------------
+  # Append coefficients for each model to respective data frames
+  coefficients_ols <- rbind(coefficients_ols, data.frame(Iteration = i, Intercept = coef_ols[1,1], Var2 = coef_ols[2,1], SE_Intercept = coef_ols[1,2], SE_Var2 = coef_ols[2,2]))
+  coefficients_ml <- rbind(coefficients_ml, data.frame(Iteration = i, Intercept = coef_ml[1,1], Var2 = coef_ml[2,1], SE_Intercept = coef_ml[1,2], SE_Var2 = coef_ml[2,2]))
+  coefficients_2step <- rbind(coefficients_2step, data.frame(Iteration = i, Intercept = coef_2step[1,1], Var2 = coef_2step[2,1], SE_Intercept = coef_2step[1,2], SE_Var2 = coef_2step[2,2]))
+  coefficients_true <- rbind(coefficients_true, data.frame(Iteration = i, Intercept = coef_true[1,1], Var2 = coef_true[2,1], SE_Intercept = coef_true[1,2], SE_Var2 = coef_true[2,2]))
+
+  # Normality test (Jarque-Bera)
+  jb_p[i, ] <- c(jarque.bera.test(residuals_ols)$p.value, 
+                 jarque.bera.test(residuals_ml)$p.value, 
+                 jarque.bera.test(residuals_2step)$p.value,
+                 jarque.bera.test(residuals_true)$p.value)
+  jb_s[i, ] <- c(jarque.bera.test(residuals_ols)$statistic, 
+                 jarque.bera.test(residuals_ml)$statistic, 
+                 jarque.bera.test(residuals_2step)$statistic,
+                 jarque.bera.test(residuals_true)$statistic)
+  
+  # Rescaled moments normality test
+  skewness_values <- c(skewness(residuals_ols), skewness(residuals_ml), skewness(residuals_2step), skewness(residuals_true))
+  kurtosis_values <- c(kurtosis(residuals_ols), kurtosis(residuals_ml), kurtosis(residuals_2step), kurtosis(residuals_true))
+  
+  n_values <- c(length(residuals_ols), length(residuals_ml), length(residuals_2step), length(residuals_true))
+  k_values <- c(length(model.ols$coefficients) - 1, length(model.ml$coefficients) - 1, length(model.2step$coefficients) - 1, length(model.true$coefficients) - 1)
+  
+  c_values <- n_values / (n_values - k_values)
+  rescaled_skewness <- sqrt(c_values) * skewness_values
+  rescaled_kurtosis <- c_values * (kurtosis_values - 3) + 3
+  
+  JB <- (n_values / 6) * (rescaled_skewness^2 + (rescaled_kurtosis - 3)^2 / 4)
+  rescaled_moments_p[i, ] <- pchisq(JB, df = 2, lower.tail = FALSE)
+
+  
+  
+  
+  }
+```
+
+# 3. Metrics
+
+```{r}
+print(average.censoring <- mean(censoring))
+```
+
+```{r}
+# Calculate average of each metric
+avg_mae <- colMeans(mae)
+avg_mse <- colMeans(mse)
+avg_rmse <- colMeans(rmse)
+avg_var_resid <- colMeans(var_resid)
+avg_bias_resid <- colMeans(bias_resid)
+avg_jb_p <- colMeans(jb_p)
+avg_jb_s <- colMeans(jb_s)
+avg_rescaled_moments_p <- colMeans(rescaled_moments_p)
+
+# Create a table to display the results
+results <- data.frame(
+  Model = c("OLS", "ML", "2Step","True"),
+  MAE = avg_mae,
+  RMSE = avg_rmse,
+  MSE = avg_mse,
+  Var.residuals = avg_var_resid,
+  Sqr_bias.residuals = avg_bias_resid,
+  Jarque_Bera.statistic = avg_jb_s,
+  Jarque_Bera.pvalue = avg_jb_p,
+  Rescale_moments.pvalue = avg_rescaled_moments_p
+  
+)
+
+print(results)
+
+# Calculate average of each metric
+A.avg_mse <- colMeans(A.mse)
+A.avg_var_resid <- colMeans(A.var_resid)
+A.avg_bias_resid <- colMeans(A.bias_resid)
+
+# Create a table to display the results
+A.results <- data.frame(
+  Model = c("OLS", "ML", "2Step","True"),
+  MSE = A.avg_mse,
+  Var.residuals = A.avg_var_resid,
+  Sqr_bias.residuals = A.avg_bias_resid
+  
+)
+
+print(A.results)
+
+# Compute the average coefficients for each model
+average_coefficients_ols <- aggregate(. ~ Iteration, coefficients_ols, mean)
+average_coefficients_ml <- aggregate(. ~ Iteration, coefficients_ml, mean)
+average_coefficients_2step <- aggregate(. ~ Iteration, coefficients_2step, mean)
+average_coefficients_true <- aggregate(. ~ Iteration, coefficients_true, mean)
+
+# Display the average coefficients and standard errors
+average_coefficients <- data.frame(
+  Model = c("OLS", "ML", "Two-Step","true"),
+  Intercept = c(mean(average_coefficients_ols$Intercept), mean(average_coefficients_ml$Intercept), mean(average_coefficients_2step$Intercept), mean(average_coefficients_true$Intercept)),
+  SE_Intercept = c(mean(average_coefficients_ols$SE_Intercept), mean(average_coefficients_ml$SE_Intercept), mean(average_coefficients_2step$SE_Intercept), mean(average_coefficients_true$SE_Intercept)),
+  Var1 = c(mean(average_coefficients_ols$Var2), mean(average_coefficients_ml$Var2), mean(average_coefficients_2step$Var2), mean(average_coefficients_true$Var2)),
+  SE_Var1 = c(mean(average_coefficients_ols$SE_Var2), mean(average_coefficients_ml$SE_Var2), mean(average_coefficients_2step$SE_Var2), mean(average_coefficients_true$SE_Var2))
+)
+
+kable(average_coefficients, format = "html") %>%
+  kable_styling(full_width = FALSE)
+
+# Plot MSE for each iteration for each model
+plot(mse_ols$Iteration, mse_ols$MSE, type = "l", col = "blue",
+     xlab = "Iteration", ylab = "Mean Squared Error", main = "MSE for Each Model",
+     ylim = range(c(mse_ols$MSE, mse_ml$MSE, mse_2step$MSE)))
+lines(mse_ml$Iteration, mse_ml$MSE, type = "l", col = "red")
+lines(mse_2step$Iteration, mse_2step$MSE, type = "l", col = "green")
+
+# Add legend
+legend("topright", legend = c("OLS", "ML", "Two-Step"), col = c("blue", "red", "green"), lty = 1)
+
+
+
+# Create a matrix of MSE values for each model
+mse_matrix <- cbind(mse[, 1], mse[, 2], mse[, 3])
+
+# Convert the matrix to a data frame
+mse_data <- as.data.frame(mse_matrix)
+colnames(mse_data) <- c("OLS", "ML", "2Step")
+
+# Create the boxplot
+boxplot(mse_data, col = c("blue", "red", "green"), 
+        main = "MSE for Each Model", ylab = "MSE", xlab = "Model")
+
+```
