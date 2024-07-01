@@ -1,5 +1,5 @@
 ---
-title: "Version 6"
+title: "Version 7"
 author: "J. Ignacio Guzmán Serrano (685935jg)"
 date: "`r Sys.Date()`"
 output: pdf_document
@@ -9,7 +9,8 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-### Libraries
+
+## 1. Load libraries
 
 ```{r}
 library(sampleSelection)
@@ -25,99 +26,113 @@ library(kableExtra)
 library(MASS)
 library(nortest)
 library(moments)
-library(tseries)
+library(tseries) 
 ```
 
-### Read in advance
 
-Check the Outline. There are 3 parts:
 
-1.  Creation of data set 'data': I used the format code by Toomet & Henningsen (2008). The first chunck (1.1) creates a data set when variables are not correlated and in the second chunck (1.2) when you want to correlate them. I could have used just the second chunck for everything and set correlation to 0 when not wanting variables to be correlated but I took the first option
 
-    No matter the option, in this section the different combinations for predictions are created: the scenarios, censoring, sample size, correlation of errors and correlation of variables.
+# ------------------------------------------------------------------------
 
-    (The one by default is Scenario 1, sample size = 800, correlation errors = 0, degree of censoring = 30%)
 
-2.  Running iterations: 100 iterations where models are trained and validated. WARNING: change % partition depending on sample size (0.625 for sample size = 800; and 0.869 when sample size = 2300) and change Heckman models code when trained depending on the Scenario to be tested.
 
-3.  Results: all in one chunck that will generated:
 
-    -   A table with metrics for predictions made on 'test_ws'.
+```{r Create scenarios normal distribution of errors}
 
-    -   A second table with metrics for predictions made on 'test'.
+# Function to generate dataset with specified correlation
+generate_normal <- function(seed, corr.errors, corr.var, N, censoring) {
+  set.seed(seed)
+  
+  # Generate random values
+  correlated_normals <- mvrnorm(N, c(0, 0), matrix(c(1, corr.var, corr.var, 1), 2, 2))
 
-    -   A third table with the coefficients from models.
+    # Transform normal variables to uniform variables
+    v1 <- pnorm(correlated_normals[,1])  # Transform to uniform
+    v2 <- pnorm(correlated_normals[,2])  # Transform to uniform
+  
+  
+  # Generate correlated errors
+errors <- rmvnorm(N, c(0, 0), matrix(c(1, corr.errors,corr.errors, 1), 2, 2))
 
-    -   Two plots. A boxplot of all the MSE from predictions made on 'test_ws'. And a plot with MSE from predictions on 'test_ws' from each iteration.
+  # Create the data frame
+  data <- data.frame(var1 = v1, var2 = v2, errors.1 = errors[, 1], errors.2 = errors[, 2])
+  data$selection <- data$var2 + data$errors.2 > censoring
+  data$latent.truth <- data$var1 + data$errors.1
+  data$bias.outcome <- data$latent.truth * (data$selection > 0)
+  
+  return(data)
+}
 
-# 1. Creation of data set 'data'
+# Generate datasets with different correlations (data.censoring.correrrors.corrvar.N)
 
-#### 1.1 When variables not correlated
+n.data.25.0.0.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = 0, corr.var = 0, N = 800)
+n.data.25.0.5.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = 0, corr.var = -0.5, N = 800)
+n.data.25.0.85.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = 0, corr.var = -0.85, N = 800)
+n.data.25.0.95.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = 0, corr.var = -0.95, N = 800)
 
-```{r}
-set.seed(22)
+n.data.25.5.0.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.5, corr.var = 0, N = 800)
+n.data.25.5.5.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.5, corr.var = -0.5, N = 800)
+n.data.25.5.85.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.5, corr.var = -0.85, N = 800)
+n.data.25.5.95.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.5, corr.var = -0.95, N = 800)
 
-# --------------------------------------------------------------------
+n.data.25.85.0.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.85, corr.var = 0, N = 800)
+n.data.25.85.5.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.85, corr.var = -0.5, N = 800)
+n.data.25.85.85.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.85, corr.var = -0.85, N = 800)
+n.data.25.85.95.800 <- generate_normal(seed = 22, censoring = 0.35, corr.errors = -0.85, corr.var = -0.95, N = 800)
 
-v1 <- runif(800) # Random values from 0 to 1
-v2 <- runif(800) # Random values from 0 to 1
-errors <- rmvnorm(800, c(0, 0), matrix(c(1, 0,0, 1), 2, 2))
-                 # Errors correlated at -0.7
+n.data.80.0.0.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = 0, corr.var = 0, N = 800)
+n.data.80.0.5.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = 0, corr.var = -0.5, N = 800)
+n.data.80.0.85.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = 0, corr.var = -0.85, N = 800)
+n.data.80.0.95.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = 0, corr.var = -0.95, N = 800)
 
-# --------------------------------------------------------------------
+n.data.80.5.0.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.5, corr.var = 0, N = 800)
+n.data.80.5.5.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.5, corr.var = -0.5, N = 800)
+n.data.80.5.85.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.5, corr.var = -0.85, N = 800)
+n.data.80.5.95.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.5, corr.var = -0.95, N = 800)
 
-# join previous variables to a data frame.
-data <- data.frame(var1 = v1, var2 = v2, errors = errors)
-# add to that data frame the following variables:
-data$selection <- data$var2 + data$errors.2 > 0
-data$latent.truth <- data$var1 + data$errors.1
-data$bias.outcome <- data$latent.truth * (data$selection > 0)
+n.data.80.85.0.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.85, corr.var = 0, N = 800)
+n.data.80.85.5.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.85, corr.var = -0.5, N = 800)
+n.data.80.85.85.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.85, corr.var = -0.85, N = 800)
+n.data.80.85.95.800 <- generate_normal(seed = 22, censoring = 1.9, corr.errors = -0.85, corr.var = -0.95, N = 800)
 
-rm( v1, v2, errors)
+n.data.25.0.0.2300 <- generate_normal(seed = 22, censoring = 0.15, corr.errors = 0, corr.var = 0, N = 2300)
+n.data.25.0.5.2300 <- generate_normal(seed = 22, censoring = 0.15, corr.errors = 0, corr.var = -0.5, N = 2300)
+n.data.25.0.85.2300 <- generate_normal(seed = 22, censoring = 0.15, corr.errors = 0, corr.var = -0.85, N = 2300)
+n.data.25.0.95.2300 <- generate_normal(seed = 22, censoring = 0.15, corr.errors = 0, corr.var = -0.95, N = 2300)
 
-# Check censoring degree
-(nrow(data[data$bias.outcome == 0, ])/nrow(data))
+n.data.25.5.0.2300 <- generate_normal(seed = 22, censoring = -0.15, corr.errors = -0.5, corr.var = 0, N = 2300)
+n.data.25.5.5.2300 <- generate_normal(seed = 22, censoring = -0.15, corr.errors = -0.5, corr.var = -0.5, N = 2300)
+n.data.25.5.85.2300 <- generate_normal(seed = 22, censoring =-0.15, corr.errors = -0.5, corr.var = -0.85, N = 2300)
+n.data.25.5.95.2300 <- generate_normal(seed = 22, censoring =-0.15, corr.errors = -0.5, corr.var = -0.95, N = 2300)
+
+n.data.25.85.0.2300 <- generate_normal(seed = 22, censoring = -0.15, corr.errors = -0.85, corr.var = 0, N = 2300)
+n.data.25.85.5.2300 <- generate_normal(seed = 22, censoring = -0.15, corr.errors = -0.85, corr.var = -0.5, N = 2300)
+n.data.25.85.85.2300 <- generate_normal(seed = 22, censoring =-0.15, corr.errors = -0.85, corr.var = -0.85, N = 2300)
+n.data.25.85.95.2300 <- generate_normal(seed = 22, censoring =-0.15, corr.errors = -0.85, corr.var = -0.95, N = 2300)
+
+n.data.80.0.0.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = 0, corr.var = 0, N = 2300)
+n.data.80.0.5.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = 0, corr.var = -0.5, N = 2300)
+n.data.80.0.85.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = 0, corr.var = -0.85, N = 2300)
+n.data.80.0.95.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = 0, corr.var = -0.95, N = 2300)
+
+n.data.80.5.0.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.5, corr.var = 0, N = 2300)
+n.data.80.5.5.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.5, corr.var = -0.5, N = 2300)
+n.data.80.5.85.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.5, corr.var = -0.85, N = 2300)
+n.data.80.5.95.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.5, corr.var = -0.95, N = 2300)
+
+n.data.80.85.0.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.85, corr.var = 0, N = 2300)
+n.data.80.85.5.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.85, corr.var = -0.5, N = 2300)
+n.data.80.85.85.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.85, corr.var = -0.85, N = 2300)
+n.data.80.85.95.2300 <- generate_normal(seed = 22, censoring = 1.35, corr.errors = -0.85, corr.var = -0.95, N = 2300)
 ```
 
-#### 1.2 When variables correlated
 
-```{r}
-set.seed(22)
-
-# --------------------------------------------------------------------
-
-
-correlated_normals <- mvrnorm(800, c(0, 0), matrix(c(1, -0.5, -0.5, 1), 2, 2))
-
-# Transform normal variables to uniform variables
-v1 <- pnorm(correlated_normals[,1])  # Transform to uniform
-v2 <- pnorm(correlated_normals[,2])  # Transform to uniform
-errors <- rmvnorm(800, c(0, 0), matrix(c(1, -0.85,-0.85, 1), 2, 2))
-
-# --------------------------------------------------------------------
-# join previous variables to a data frame.
-data <- data.frame(var1 = v1, var2 = v2, errors = errors)
-# add to that data frame the following variables:
-data$selection <- data$var2 +  data$errors.2 > 0
-data$latent.truth <- data$var1 + data$errors.1
-data$bias.outcome <- data$latent.truth * (data$selection > 0)
-
-rm( v1, v2, errors)
-# Check censoring degree
-(nrow(data[data$bias.outcome == 0, ])/nrow(data))
-```
-
-# 2. Iterations
-
-Predictions are done 2 times, one with 'test' set and another one with 'test_ws' set. - The ones done with 'test' are recorded with letter **A** to differentiate.
 
 ```{r}
 
 
 # Initialize empty matrices to store results -----------------------------------
 num_models <- 4
-num_metrics <- 5
-num_tests <- 4
 mae <- matrix(NA, nrow = 100, ncol = num_models)
 mse <- matrix(NA, nrow = 100, ncol = num_models)
 rmse <- matrix(NA, nrow = 100, ncol = num_models)
@@ -159,11 +174,12 @@ censoring <- matrix(NA, nrow = 100)
 
 for (i in 1:100) {
   set.seed(i)  # Set a different seed for each iteration
-  
+  options(digits=3) # to get only 3 decimals
+
   # Create training and test set
-  train_indices <- createDataPartition(data$var1, p = 0.625, list = FALSE)
-  train <- data[train_indices, ]
-  test <- data[-train_indices, ]
+  train_indices <- createDataPartition(n.data.80.85.95.2300$var1, p = 0.869, list = FALSE)
+  train <- n.data.80.85.95.2300[train_indices, ]
+  test <- n.data.80.85.95.2300[-train_indices, ]
   
   # Subset data for Heckman model
   train_ws <- train[train$selection, ]
@@ -288,15 +304,11 @@ for (i in 1:100) {
   
   
   }
-```
+  options(digits=3) # to get only 3 decimals
 
-# 3. Metrics
-
-```{r}
 print(average.censoring <- mean(censoring))
-```
+ 
 
-```{r}
 # Calculate average of each metric
 avg_mae <- colMeans(mae)
 avg_mse <- colMeans(mse)
@@ -358,14 +370,14 @@ kable(average_coefficients, format = "html") %>%
   kable_styling(full_width = FALSE)
 
 # Plot MSE for each iteration for each model
-plot(mse_ols$Iteration, mse_ols$MSE, type = "l", col = "blue",
-     xlab = "Iteration", ylab = "Mean Squared Error", main = "MSE for Each Model",
+plot(mse_ols$Iteration, mse_ols$MSE, type = "l", col = "#A7CCEB", lwd = 2,
+     xlab = "Iteration", ylab = "Mean Squared Error",
      ylim = range(c(mse_ols$MSE, mse_ml$MSE, mse_2step$MSE)))
-lines(mse_ml$Iteration, mse_ml$MSE, type = "l", col = "red")
-lines(mse_2step$Iteration, mse_2step$MSE, type = "l", col = "green")
+lines(mse_ml$Iteration, mse_ml$MSE, type = "l", col = "#FFB347", lwd = 2)
+lines(mse_2step$Iteration, mse_2step$MSE, type = "l", col = "#77DD77", lwd = 2)
 
 # Add legend
-legend("topright", legend = c("OLS", "ML", "Two-Step"), col = c("blue", "red", "green"), lty = 1)
+legend("topright", legend = c("OLS", "ML", "Two-Step"), col = c("#A7CCEB", "#FFB347", "#77DD77"), lwd = 2, lty = 1)
 
 
 
@@ -377,7 +389,7 @@ mse_data <- as.data.frame(mse_matrix)
 colnames(mse_data) <- c("OLS", "ML", "2Step")
 
 # Create the boxplot
-boxplot(mse_data, col = c("blue", "red", "green"), 
-        main = "MSE for Each Model", ylab = "MSE", xlab = "Model")
+boxplot(mse_data, col = c("#A7CCEB", "#FFB347", "#77DD77"), ylab = "MSE", las = 1)
+grid(nx = NA, ny = NULL)
 
 ```
